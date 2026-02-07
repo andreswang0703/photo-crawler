@@ -22,42 +22,28 @@ You control what gets processed by adding photos to a specific album. No heurist
 
 ## Requirements
 
-- macOS 13+ (Ventura or later)
-- Swift toolchain (`xcode-select --install`)
+- macOS 13+ (Apple Silicon)
 - An [Anthropic API key](https://console.anthropic.com/)
 - An Obsidian vault (iCloud-synced or local)
 
 ## Setup
 
-### 1. Build and install
+### 1. Install
 
 ```bash
-git clone <repo-url> photo-crawler
-cd photo-crawler
-swift build -c release
-mkdir -p ~/bin
-cp .build/release/photo-crawler ~/bin/photo-crawler
+curl -L -o photo-crawler https://github.com/andreswang0703/photo-crawler/releases/download/v0.1.0/photo-crawler
+chmod +x photo-crawler
+sudo mv photo-crawler /usr/local/bin/
 ```
 
-Make sure `~/bin` is in your PATH. Add this to `~/.zshrc` if needed:
-
-```bash
-export PATH="$HOME/bin:$PATH"
-```
-
-Then reload: `source ~/.zshrc`
-
-### 2. Create config
+### 2. Configure
 
 ```bash
 photo-crawler init
-```
-
-Open the config file and set your vault path and API key:
-
-```bash
 open ~/.config/photo-crawler/config.json
 ```
+
+Set your vault path and API key:
 
 ```json
 {
@@ -67,43 +53,38 @@ open ~/.config/photo-crawler/config.json
 }
 ```
 
-To find your iCloud Obsidian vault path:
+To find your Obsidian vault path: `ls ~/Library/Mobile\ Documents/com~apple~CloudDocs/obsidian/`
+
+### 3. Create album
+
+Open **Photos** on your Mac or iPhone and create an album called **"crawler"**.
+
+This is the album photo-crawler watches. Add photos you want extracted to this album.
+
+### 4. Grant Photos access
+
+Go to **System Settings → Privacy & Security → Photos** → toggle on **Terminal** (or your terminal app).
+
+### 5. Run
 
 ```bash
-ls ~/Library/Mobile\ Documents/com~apple~CloudDocs/obsidian/
+photo-crawler watch
 ```
 
-Or for vaults synced via the Obsidian iCloud plugin:
+Add a photo to your "crawler" album — it shows up in your vault within 30 seconds.
+
+### Build from source (optional)
+
+If you prefer to build yourself:
 
 ```bash
-ls ~/Library/Mobile\ Documents/iCloud~md~obsidian/Documents/
+git clone https://github.com/andreswang0703/photo-crawler.git
+cd photo-crawler
+swift build -c release
+sudo cp .build/release/photo-crawler /usr/local/bin/
 ```
 
-The path must contain a `.obsidian/` subdirectory.
-
-### 3. Create the album in Apple Photos
-
-Open the **Photos** app on your Mac or iPhone and create a new album called **"crawler"** (or whatever you set in the `album` config field).
-
-This is the album photo-crawler watches. Only photos in this album will be processed.
-
-### 4. Grant Terminal access to Photos
-
-photo-crawler needs permission to read your Photos library. Go to:
-
-**System Settings → Privacy & Security → Photos** → toggle on your terminal app (Terminal, iTerm2, etc.)
-
-If you don't see your terminal app listed, run `photo-crawler scan` once — macOS will prompt you to grant access. Then go to the Settings above and make sure it's enabled.
-
-### 5. Test it
-
-Add a photo of a book page to your "crawler" album, then:
-
-```bash
-photo-crawler scan
-```
-
-You should see the extracted markdown appear in your vault under `captures/`.
+Requires Swift toolchain (`xcode-select --install`).
 
 ## Usage
 
