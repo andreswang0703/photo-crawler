@@ -58,11 +58,14 @@ public actor ProcessingPipeline {
         var errorCount = 0
 
         do {
-            let photos = try await scanner.fetchNewPhotos()
+            // Check which asset IDs already have notes in the vault
+            let existingIds = vaultWriter.existingAssetIds()
+
+            let photos = try await scanner.fetchNewPhotos(existingAssetIds: existingIds)
             result.photosFound = photos.count
 
             #if canImport(os)
-            logger.info("Found \(photos.count) new photos to process")
+            logger.info("Found \(photos.count) new photos to process (\(existingIds.count) already in vault)")
             #endif
 
             for (asset, imageData) in photos {
@@ -81,9 +84,13 @@ public actor ProcessingPipeline {
                     await stateStore.incrementExtracted()
                     extractedCount += 1
 
-                    // Pass 3: Generate markdown
+                    // Pass 3: Generate markdown with asset ID
                     let capturedDate = asset.creationDate ?? Date()
-                    let markdown = markdownGenerator.generate(from: extraction, capturedDate: capturedDate)
+                    let markdown = markdownGenerator.generate(
+                        from: extraction,
+                        capturedDate: capturedDate,
+                        assetId: asset.localIdentifier
+                    )
 
                     // Pass 4: Write to vault
                     let relativePath = try vaultWriter.write(
@@ -92,9 +99,6 @@ public actor ProcessingPipeline {
                         capturedDate: capturedDate
                     )
                     await stateStore.incrementWritten()
-
-                    // Mark as processed
-                    await stateStore.markProcessed(asset.localIdentifier)
                     processedCount += 1
 
                     #if canImport(os)
@@ -110,7 +114,6 @@ public actor ProcessingPipeline {
                 } catch {
                     errorCount += 1
                     await stateStore.incrementErrors()
-                    await stateStore.markProcessed(asset.localIdentifier)
 
                     #if canImport(os)
                     logger.error("Error processing \(asset.localIdentifier): \(error.localizedDescription)")

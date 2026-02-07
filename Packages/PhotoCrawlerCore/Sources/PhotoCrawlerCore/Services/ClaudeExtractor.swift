@@ -71,7 +71,7 @@ public actor ClaudeExtractor {
 
         {
           "content_type": "book_page" | "article" | "duolingo" | "code_snippet" | "flashcard" | "notes" | "unknown",
-          "source_title": "string - title of the book, article, or app",
+          "source_title": "string - for books/articles use the actual title. For everything else (notes, flashcards, slides, exercises), use a short 1-2 word topic category like 'Deep Learning', 'Japanese', 'Linear Algebra', 'Python'. This field is used as a folder name.",
           "source_author": "string or null - author name if identifiable",
           "source_app": "string or null - app name if from a specific app",
           "chapter": "string or null - chapter name/number",
@@ -94,6 +94,7 @@ public actor ClaudeExtractor {
         - Extract ALL legible text visible in the image, preserving paragraph structure.
         - Use \\n for line breaks within extracted_text.
         - If you can't determine a field, use null.
+        - NEVER use "Unknown" as source_title. If there is no explicit book or article title visible, use the broad topic as the title — for example "Deep Learning" for a neural network diagram, "Japanese" for a Japanese phrasebook, "Linear Algebra" for math notes. The title is used as a folder name, so keep it short and categorical.
         - Tags should be 3-7 lowercase topic keywords relevant for note organization.
         - For Duolingo: include the language being learned and the exercise type.
         - For book pages: try to identify chapter, page number, book title from headers/footers.
@@ -101,6 +102,7 @@ public actor ClaudeExtractor {
         - The image may be a photo taken at an angle. Read the text as it appears, do not fabricate content.
         - HIGHLIGHTS: Look carefully for any text that is highlighted (marker/highlighter pen), underlined, circled, or bracketed by the reader. Include each such passage in the "highlights" array with the exact text and style ("highlight", "underline", "circled", "bracket"). If no annotations are visible, return an empty array.
         - The highlights array is for reader annotations only — not for printed bold/italic text.
+        - DIAGRAMS: If the image contains a diagram, flowchart, architecture diagram, neural network diagram, or any visual structure, DO NOT just list raw symbols and arrows. Instead, reproduce the diagram as a clear ASCII/markdown representation in extracted_text that captures the visual structure. Use markdown tables, indentation, or ASCII art to show relationships, layers, and flow. Describe what the diagram shows — its components, how they connect, and the overall structure. The goal is that someone reading the markdown should understand the diagram without seeing the original image.
         """
     }
 

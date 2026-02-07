@@ -24,8 +24,8 @@ public actor PhotoScanner {
     }
 
     /// Fetch unprocessed photos from the configured album.
-    /// Returns an array of (PHAsset, Data) pairs for each new photo.
-    public func fetchNewPhotos() async throws -> [(asset: PHAsset, data: Data)] {
+    /// Photos whose asset ID is in `existingAssetIds` are skipped (already have a note in the vault).
+    public func fetchNewPhotos(existingAssetIds: Set<String>) async throws -> [(asset: PHAsset, data: Data)] {
         let status = PHPhotoLibrary.authorizationStatus(for: .readWrite)
         guard status == .authorized else {
             throw PhotoScannerError.notAuthorized(status)
@@ -36,23 +36,21 @@ public actor PhotoScanner {
             throw PhotoScannerError.albumNotFound(config.albumName)
         }
 
-        // Fetch ALL images in the album — rely on processedIdentifiers to skip done ones
         let assets = fetchAllAssets(in: album)
 
-        // Filter already-processed photos
-        var results: [(asset: PHAsset, data: Data)] = []
-        for asset in assets {
-            let identifier = asset.localIdentifier
-            guard await !stateStore.isProcessed(identifier) else { continue }
+        // Only load image data for photos that don't already have a vault note
+        let newAssets = assets.filter { !existingAssetIds.contains($0.localIdentifier) }
 
+        #if canImport(os)
+        logger.info("Album '\(self.config.albumName)': \(assets.count) total, \(newAssets.count) new")
+        #endif
+
+        var results: [(asset: PHAsset, data: Data)] = []
+        for asset in newAssets {
             if let data = try await loadImageData(for: asset) {
                 results.append((asset: asset, data: data))
             }
         }
-
-        #if canImport(os)
-        logger.info("Fetched \(results.count) new photos from album '\(self.config.albumName)' (from \(assets.count) total)")
-        #endif
 
         return results
     }

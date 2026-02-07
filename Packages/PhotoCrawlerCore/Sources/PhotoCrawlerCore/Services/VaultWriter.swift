@@ -66,6 +66,44 @@ public struct VaultWriter: Sendable {
         return relativePath
     }
 
+    /// Scan all markdown files in captures/ and return the set of asset_id values found in frontmatter.
+    public func existingAssetIds() -> Set<String> {
+        let capturesDir = config.capturesPath
+        let fm = FileManager.default
+        var ids = Set<String>()
+
+        guard let enumerator = fm.enumerator(atPath: capturesDir) else { return ids }
+
+        while let relativePath = enumerator.nextObject() as? String {
+            guard relativePath.hasSuffix(".md") else { continue }
+            let fullPath = (capturesDir as NSString).appendingPathComponent(relativePath)
+            // Read just the first 512 bytes — frontmatter is small
+            guard let handle = FileHandle(forReadingAtPath: fullPath),
+                  let headerData = try? handle.read(upToCount: 512),
+                  let header = String(data: headerData, encoding: .utf8) else { continue }
+            try? handle.close()
+
+            // Parse asset_id from YAML frontmatter
+            for line in header.split(separator: "\n") {
+                if line.hasPrefix("asset_id:") {
+                    let value = line.dropFirst("asset_id:".count)
+                        .trimmingCharacters(in: .whitespaces)
+                        .trimmingCharacters(in: CharacterSet(charactersIn: "\""))
+                    if !value.isEmpty {
+                        ids.insert(value)
+                    }
+                    break
+                }
+                // Stop after frontmatter ends
+                if line == "---" && header.hasPrefix("---") && line != header.split(separator: "\n").first {
+                    break
+                }
+            }
+        }
+
+        return ids
+    }
+
     /// Validate that the vault path exists and contains an .obsidian directory.
     public static func validateVault(path: String) -> Bool {
         let obsidianDir = (path as NSString).appendingPathComponent(".obsidian")

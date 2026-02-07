@@ -6,13 +6,16 @@ public struct MarkdownGenerator: Sendable {
     public init() {}
 
     /// Generate markdown content with YAML frontmatter from an extraction result.
-    public func generate(from extraction: ExtractionResult, capturedDate: Date) -> String {
+    public func generate(from extraction: ExtractionResult, capturedDate: Date, assetId: String? = nil) -> String {
         var lines: [String] = []
 
         // YAML Frontmatter
         lines.append("---")
         lines.append("source: \"\(escapeYAML(extraction.source.title))\"")
         lines.append("captured: \(iso8601(capturedDate))")
+        if let assetId {
+            lines.append("asset_id: \"\(escapeYAML(assetId))\"")
+        }
         lines.append("---")
         lines.append("")
 

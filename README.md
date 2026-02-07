@@ -141,45 +141,29 @@ photo-crawler config
 | `max_concurrent_api_calls` | `3` | Max parallel Claude API requests |
 | `initial_scan_days` | `30` | How far back to scan on first run |
 
-## Output
+## Output Structure
 
-Extracted content is written to `{vault}/captures/`:
+Files are organized under `{vault}/captures/`:
 
 ```
-vault/captures/
+captures/
   book_page/
     genesis/
       snapshot-001.md
-      snapshot-002.md
-    sapiens/
-      snapshot-001.md
   article/
-    ai-2027/
+    how-to-scale-your-model/
       snapshot-001.md
-  duolingo/
-    spanish/
+  flashcard/
+    日语口语900句/
+      snapshot-001.md
+  notes/
+    unknown/
       snapshot-001.md
 ```
 
-Each file has minimal YAML frontmatter and inline highlights:
+## Re-scanning
 
-```markdown
----
-source: "Genesis"
-captured: 2026-02-07T03:51:26Z
----
-
-# Genesis (p. 64)
-
-Planning machines would need to combine the linguistic fluency
-of a large language model with <u>the multivariate, multistep
-analyses employed by game-playing AIs</u> — and transcend the
-abilities of both.
-
-> **Summary:** Discussion of AI planning machines combining language models with game-playing capabilities.
-```
-
-Highlighted/underlined passages from the original photo are rendered inline: `<u>underlined</u>`, `==highlighted==`, `**[circled]**`.
+Each note contains an `asset_id` in its frontmatter. photo-crawler checks the vault for existing notes before processing. **Delete a note from Obsidian and the photo will be re-extracted on the next poll** — useful if you want a better extraction or the first one was wrong.
 
 ## Running as a Background Service
 
@@ -220,10 +204,8 @@ Stop: `launchctl unload ~/Library/LaunchAgents/com.photocrawler.plist`
 ## State and Data
 
 - **Config:** `~/.config/photo-crawler/config.json`
-- **State:** `~/Library/Application Support/PhotoCrawler/state.json` — tracks processed photo IDs
-- **Output:** `{vault}/captures/`
-
-State is safe to delete — photo-crawler will re-scan on next run.
+- **State:** `~/Library/Application Support/PhotoCrawler/state.json` — processing stats only
+- **Output:** `{vault}/captures/` — the vault itself is the source of truth for what's been processed (via `asset_id` in frontmatter)
 
 ## Cost
 
