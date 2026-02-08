@@ -27,6 +27,9 @@ final class PhotoCrawlerCoreTests: XCTestCase {
         XCTAssertEqual(config.maxImageDimension, 1568)
         XCTAssertFalse(config.screenshotsOnly)
         XCTAssertEqual(config.initialScanDays, 30)
+        XCTAssertTrue(config.categories.isEmpty)
+        XCTAssertEqual(config.defaultRules.extractionRules, "Extract readable text. Add a short summary.")
+        XCTAssertTrue(config.globalRules.isEmpty)
     }
 
     func testCrawlerConfigurationIsValid() {
@@ -51,47 +54,33 @@ final class PhotoCrawlerCoreTests: XCTestCase {
     func testMarkdownGeneratorOutput() {
         let generator = MarkdownGenerator()
         let extraction = ExtractionResult(
-            contentType: .bookPage,
-            source: SourceInfo(title: "Sapiens", author: "Yuval Noah Harari"),
-            location: LocationInfo(chapter: "Chapter 14", page: "247"),
-            extractedText: "The great discovery that launched the Scientific Revolution...",
-            summary: "The Scientific Revolution began with the admission of ignorance.",
-            language: "en",
-            tags: ["history", "science"]
+            category: "BookNote",
+            title: "Sapiens",
+            content: "The great discovery that launched the Scientific Revolution...",
+            writePlan: WritePlan(mode: .create, path: "captures/book_notes/sapiens.md")
         )
 
         let date = Date(timeIntervalSince1970: 1_770_000_000)
-        let markdown = generator.generate(from: extraction, capturedDate: date)
+        let markdown = generator.generateDocument(from: extraction, capturedDate: date, assetId: "asset-123")
 
         XCTAssertTrue(markdown.contains("---"))
-        XCTAssertTrue(markdown.contains("type: capture"))
-        XCTAssertTrue(markdown.contains("content_type: book_page"))
-        XCTAssertTrue(markdown.contains("source_title: \"Sapiens\""))
-        XCTAssertTrue(markdown.contains("source_author: \"Yuval Noah Harari\""))
-        XCTAssertTrue(markdown.contains("chapter: \"Chapter 14\""))
-        XCTAssertTrue(markdown.contains("page: \"247\""))
-        XCTAssertTrue(markdown.contains("language: en"))
-        XCTAssertTrue(markdown.contains("tags: [history, science]"))
-        XCTAssertTrue(markdown.contains("# Sapiens — Chapter 14 (p. 247)"))
+        XCTAssertTrue(markdown.contains("title: \"Sapiens\""))
+        XCTAssertTrue(markdown.contains("category: \"BookNote\""))
+        XCTAssertTrue(markdown.contains("asset_ids: [\"asset-123\"]"))
         XCTAssertTrue(markdown.contains("The great discovery"))
-        XCTAssertTrue(markdown.contains("> **Summary:**"))
-        XCTAssertTrue(markdown.contains("Captured by PhotoCrawler"))
     }
 
     func testMarkdownGeneratorMinimalExtraction() {
         let generator = MarkdownGenerator()
         let extraction = ExtractionResult(
-            contentType: .unknown,
-            source: SourceInfo(title: "Unknown Source"),
-            location: LocationInfo(),
-            extractedText: "Some text",
-            summary: "",
-            language: "en",
-            tags: []
+            category: "default",
+            title: "Untitled",
+            content: "Some text",
+            writePlan: WritePlan(mode: .create, path: "")
         )
 
-        let markdown = generator.generate(from: extraction, capturedDate: Date())
-        XCTAssertTrue(markdown.contains("# Unknown Source"))
+        let markdown = generator.generateDocument(from: extraction, capturedDate: Date(), assetId: "asset-1")
+        XCTAssertTrue(markdown.contains("title: \"Untitled\""))
         XCTAssertTrue(markdown.contains("Some text"))
     }
 
@@ -173,22 +162,19 @@ final class PhotoCrawlerCoreTests: XCTestCase {
         config.vaultPath = tempDir.path
 
         let writer = VaultWriter(config: config)
-        let generator = MarkdownGenerator()
-
         let extraction = ExtractionResult(
-            contentType: .bookPage,
-            source: SourceInfo(title: "Sapiens: A Brief History", author: "Harari"),
-            location: LocationInfo(chapter: "Chapter 1"),
-            extractedText: "Test content",
-            summary: "Test summary",
-            language: "en",
-            tags: ["test"]
+            category: "BookNote",
+            title: "Sapiens: A Brief History",
+            content: "Test content",
+            writePlan: WritePlan(
+                mode: .create,
+                path: "captures/book_notes/Sapiens: A Brief History.md"
+            )
         )
 
-        let markdown = generator.generate(from: extraction, capturedDate: Date())
-        let path = try writer.write(markdown: markdown, extraction: extraction, capturedDate: Date())
+        let path = try writer.write(extraction: extraction, capturedDate: Date(), assetId: "asset-123")
 
-        XCTAssertTrue(path.hasPrefix("captures/book_page/"))
+        XCTAssertTrue(path.hasPrefix("captures/book_notes/"))
         XCTAssertTrue(path.hasSuffix(".md"))
         XCTAssertFalse(path.contains(":"))
 
@@ -289,28 +275,23 @@ final class PhotoCrawlerCoreTests: XCTestCase {
     func testClaudeExtractionResponseDecoding() throws {
         let json = """
         {
-            "content_type": "book_page",
-            "source_title": "Sapiens",
-            "source_author": "Yuval Noah Harari",
-            "source_app": null,
-            "chapter": "Chapter 14",
-            "section": null,
-            "page": "247",
-            "extracted_text": "Some text here.",
-            "summary": "A summary.",
-            "language": "en",
-            "tags": ["history", "science"]
+            "category": "BookNote",
+            "title": "Sapiens",
+            "content": "Some text here.",
+            "write": {
+                "mode": "append",
+                "path": "captures/book_notes/sapiens.md",
+                "append_to": "## Highlights"
+            }
         }
         """
 
         let response = try JSONDecoder().decode(ClaudeExtractionResponse.self, from: json.data(using: .utf8)!)
-        XCTAssertEqual(response.contentType, "book_page")
-        XCTAssertEqual(response.sourceTitle, "Sapiens")
-        XCTAssertEqual(response.sourceAuthor, "Yuval Noah Harari")
-        XCTAssertNil(response.sourceApp)
-        XCTAssertEqual(response.chapter, "Chapter 14")
-        XCTAssertEqual(response.page, "247")
-        XCTAssertEqual(response.tags, ["history", "science"])
+        XCTAssertEqual(response.category, "BookNote")
+        XCTAssertEqual(response.title, "Sapiens")
+        XCTAssertEqual(response.content, "Some text here.")
+        XCTAssertEqual(response.write?.mode, .append)
+        XCTAssertEqual(response.write?.appendTo, "## Highlights")
     }
 
     // MARK: - ClassificationResult Tests

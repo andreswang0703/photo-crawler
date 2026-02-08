@@ -8,7 +8,7 @@ enum Commands {
         guard let config = loadConfig() else { return }
         guard await checkPhotoAccess() else { return }
 
-        printInfo("Scanning album \"\(config.albumName)\"...")
+        printInfo("Scanning \(scanScopeDescription(config))...")
 
         do {
             let stateStore = try StateStore()
@@ -38,7 +38,7 @@ enum Commands {
         guard await checkPhotoAccess() else { return }
 
         let intervalSecs = Int(config.scanIntervalSeconds)
-        printInfo("Watching album \"\(config.albumName)\" every \(intervalSecs)s. Press Ctrl+C to stop.")
+        printInfo("Watching \(scanScopeDescription(config)) every \(intervalSecs)s. Press Ctrl+C to stop.")
 
         signal(SIGINT) { _ in
             print("\n")
@@ -243,35 +243,37 @@ enum Commands {
 
                 printInfo("Pass 2: Claude extraction (\(extractConfig.claudeModel))...")
                 let extractor = ClaudeExtractor(config: extractConfig)
-                let extraction = try await extractor.extract(imageData: imageData, classificationResult: result)
+                let assetId = URL(fileURLWithPath: resolvedPath).lastPathComponent
+                let capturedDate = Date()
+                let extraction = try await extractor.extract(
+                    imageData: imageData,
+                    classificationResult: result,
+                    assetId: assetId,
+                    capturedDate: capturedDate
+                )
 
                 print("")
                 print("  Extraction Result")
                 print("  ─────────────────")
-                print("  Content type:      \(extraction.contentType.displayName)")
-                print("  Source:            \(extraction.source.title)")
-                if let author = extraction.source.author {
-                    print("  Author:            \(author)")
-                }
-                if let chapter = extraction.location.chapter {
-                    print("  Chapter:           \(chapter)")
-                }
-                if let page = extraction.location.page {
-                    print("  Page:              \(page)")
-                }
-                print("  Language:          \(extraction.language)")
-                print("  Tags:              \(extraction.tags.joined(separator: ", "))")
-                print("  Summary:           \(extraction.summary)")
-                print("")
-                print("  Extracted Text")
-                print("  ──────────────")
-                for line in extraction.extractedText.split(separator: "\n", omittingEmptySubsequences: false) {
-                    print("  \(line)")
+                print("  Category:          \(extraction.category)")
+                print("  Title:             \(extraction.title)")
+                print("  Write mode:        \(extraction.writePlan.mode.rawValue)")
+                print("  Write path:        \(extraction.writePlan.path.isEmpty ? "(default)" : extraction.writePlan.path)")
+                if let appendTo = extraction.writePlan.appendTo {
+                    print("  Append to:         \(appendTo)")
                 }
 
-                // Generate markdown
-                let generator = MarkdownGenerator()
-                let markdown = generator.generate(from: extraction, capturedDate: Date())
+                if extraction.writePlan.mode == .skip {
+                    print("")
+                    print("  Skipped by rules.")
+                    return
+                }
+                print("")
+                print("  Content")
+                print("  ───────")
+                for line in extraction.content.split(separator: "\n", omittingEmptySubsequences: false) {
+                    print("  \(line)")
+                }
 
                 // Save to vault
                 if shouldSave {
@@ -284,7 +286,11 @@ enum Commands {
                         var writeConfig = extractConfig
                         writeConfig.vaultPath = fileConfig.vaultPath
                         let writer = VaultWriter(config: writeConfig)
-                        let relativePath = try writer.write(markdown: markdown, extraction: extraction, capturedDate: Date())
+                        let relativePath = try writer.write(
+                            extraction: extraction,
+                            capturedDate: capturedDate,
+                            assetId: assetId
+                        )
                         let fullPath = (fileConfig.vaultPath as NSString).appendingPathComponent(relativePath)
                         print("")
                         printSuccess("Saved to vault: \(fullPath)")
@@ -292,6 +298,23 @@ enum Commands {
                         printError("Failed to save: \(error.localizedDescription)")
                     }
                 } else {
+                    // Generate markdown preview
+                    let generator = MarkdownGenerator()
+                    let markdown: String
+                    if extraction.writePlan.mode == .append {
+                        markdown = generator.generateAppendBlock(
+                            from: extraction,
+                            capturedDate: capturedDate,
+                            assetId: assetId
+                        )
+                    } else {
+                        markdown = generator.generateDocument(
+                            from: extraction,
+                            capturedDate: capturedDate,
+                            assetId: assetId
+                        )
+                    }
+
                     print("")
                     printInfo("Generated markdown preview:")
                     print("  ──────────────────────────")
@@ -425,5 +448,13 @@ enum Commands {
         let f = DateFormatter()
         f.dateFormat = "HH:mm:ss"
         return f.string(from: Date())
+    }
+
+    private static func scanScopeDescription(_ config: CrawlerConfiguration) -> String {
+        let trimmed = config.albumName.trimmingCharacters(in: .whitespacesAndNewlines)
+        if trimmed.isEmpty {
+            return "Photos Library"
+        }
+        return "album \"\(config.albumName)\""
     }
 }

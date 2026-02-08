@@ -6,6 +6,7 @@ import os
 /// Writes generated markdown files to the Obsidian vault with structured directories.
 public struct VaultWriter: Sendable {
     private let config: CrawlerConfiguration
+    private let markdownGenerator: MarkdownGenerator
 
     #if canImport(os)
     private static let logger = Logger(subsystem: "com.photocrawler", category: "VaultWriter")
@@ -13,50 +14,67 @@ public struct VaultWriter: Sendable {
 
     public init(config: CrawlerConfiguration) {
         self.config = config
+        self.markdownGenerator = MarkdownGenerator()
     }
 
     /// Write an extraction result as a markdown file to the vault.
     /// Returns the relative path from the vault root to the written file.
     public func write(
-        markdown: String,
         extraction: ExtractionResult,
-        capturedDate: Date
+        capturedDate: Date,
+        assetId: String
     ) throws -> String {
-        let relativePath = buildRelativePath(extraction: extraction, capturedDate: capturedDate)
+        let fm = FileManager.default
+        var relativePath = resolveRelativePath(
+            extraction.writePlan.path,
+            extraction: extraction,
+            assetId: assetId
+        )
+
+        let mode = extraction.writePlan.mode
+
+        if mode == .create {
+            let fullPath = (config.vaultPath as NSString).appendingPathComponent(relativePath)
+            if fm.fileExists(atPath: fullPath) {
+                relativePath = nextAvailablePath(relativePath)
+            }
+        }
+
         let fullPath = (config.vaultPath as NSString).appendingPathComponent(relativePath)
         let directoryPath = (fullPath as NSString).deletingLastPathComponent
 
-        // Create directory hierarchy
-        try FileManager.default.createDirectory(
+        try fm.createDirectory(
             atPath: directoryPath,
             withIntermediateDirectories: true,
             attributes: nil
         )
 
-        let fileURL = URL(fileURLWithPath: fullPath)
-
-        // Use NSFileCoordinator for safe iCloud writes
-        var coordinatorError: NSError?
-        var writeError: Error?
-
-        let coordinator = NSFileCoordinator()
-        coordinator.coordinate(
-            writingItemAt: fileURL,
-            options: .forReplacing,
-            error: &coordinatorError
-        ) { coordinatedURL in
-            do {
-                try markdown.write(to: coordinatedURL, atomically: true, encoding: .utf8)
-            } catch {
-                writeError = error
-            }
-        }
-
-        if let coordinatorError {
-            throw VaultWriterError.coordinationFailed(coordinatorError.localizedDescription)
-        }
-        if let writeError {
-            throw VaultWriterError.writeFailed(writeError.localizedDescription)
+        if mode == .append && fm.fileExists(atPath: fullPath) {
+            let existing = try String(contentsOfFile: fullPath, encoding: .utf8)
+            let block = markdownGenerator.generateAppendBlock(
+                from: extraction,
+                capturedDate: capturedDate,
+                assetId: assetId
+            )
+            let updatedBody = appendContent(
+                existing: existing,
+                block: block,
+                appendTo: extraction.writePlan.appendTo
+            )
+            let updated = upsertFrontmatter(
+                in: updatedBody,
+                extraction: extraction,
+                capturedDate: capturedDate,
+                assetId: assetId
+            )
+            try writeFile(updated, to: fullPath)
+        } else {
+            let markdown = markdownGenerator.generateDocument(
+                from: extraction,
+                capturedDate: capturedDate,
+                assetId: assetId
+            )
+            try writeFile(markdown, to: fullPath)
         }
 
         #if canImport(os)
@@ -77,26 +95,53 @@ public struct VaultWriter: Sendable {
         while let relativePath = enumerator.nextObject() as? String {
             guard relativePath.hasSuffix(".md") else { continue }
             let fullPath = (capturesDir as NSString).appendingPathComponent(relativePath)
-            // Read just the first 512 bytes — frontmatter is small
-            guard let handle = FileHandle(forReadingAtPath: fullPath),
-                  let headerData = try? handle.read(upToCount: 512),
-                  let header = String(data: headerData, encoding: .utf8) else { continue }
-            try? handle.close()
+            guard let content = try? String(contentsOfFile: fullPath, encoding: .utf8) else { continue }
 
-            // Parse asset_id from YAML frontmatter
-            for line in header.split(separator: "\n") {
-                if line.hasPrefix("asset_id:") {
-                    let value = line.dropFirst("asset_id:".count)
+            let lines = content.split(separator: "\n", omittingEmptySubsequences: false)
+            var inFrontmatter = false
+            var frontmatterDone = false
+
+            for line in lines {
+                let trimmed = line.trimmingCharacters(in: .whitespaces)
+                if trimmed == "---" {
+                    if !inFrontmatter && !frontmatterDone {
+                        inFrontmatter = true
+                        continue
+                    }
+                    if inFrontmatter {
+                        inFrontmatter = false
+                        frontmatterDone = true
+                        continue
+                    }
+                }
+
+                if inFrontmatter {
+                    if trimmed.hasPrefix("asset_ids:") {
+                        let value = trimmed.dropFirst("asset_ids:".count)
+                            .trimmingCharacters(in: .whitespaces)
+                        ids.formUnion(parseAssetIdList(value))
+                    } else if trimmed.hasPrefix("asset_id:") {
+                        let value = trimmed.dropFirst("asset_id:".count)
+                            .trimmingCharacters(in: .whitespaces)
+                            .trimmingCharacters(in: CharacterSet(charactersIn: "\""))
+                        if !value.isEmpty { ids.insert(value) }
+                    }
+                } else if trimmed.contains("photo-crawler asset_id:") {
+                    if let range = trimmed.range(of: "photo-crawler asset_id:") {
+                        let after = trimmed[range.upperBound...]
+                        let withoutTrailer = after.replacingOccurrences(of: "-->", with: "")
+                        let valuePart = withoutTrailer.components(separatedBy: "captured:").first ?? withoutTrailer
+                        let value = valuePart
+                            .trimmingCharacters(in: .whitespaces)
+                            .trimmingCharacters(in: CharacterSet(charactersIn: "\""))
+                        if !value.isEmpty { ids.insert(value) }
+                    }
+                } else if !frontmatterDone && trimmed.hasPrefix("asset_id:") {
+                    // Back-compat: asset_id line without explicit frontmatter delimiters.
+                    let value = trimmed.dropFirst("asset_id:".count)
                         .trimmingCharacters(in: .whitespaces)
                         .trimmingCharacters(in: CharacterSet(charactersIn: "\""))
-                    if !value.isEmpty {
-                        ids.insert(value)
-                    }
-                    break
-                }
-                // Stop after frontmatter ends
-                if line == "---" && header.hasPrefix("---") && line != header.split(separator: "\n").first {
-                    break
+                    if !value.isEmpty { ids.insert(value) }
                 }
             }
         }
@@ -113,41 +158,234 @@ public struct VaultWriter: Sendable {
 
     // MARK: - Path Building
 
-    private func buildRelativePath(extraction: ExtractionResult, capturedDate: Date) -> String {
-        let category = extraction.contentType.directoryName
-        let sourceName = sanitizeForFilesystem(extraction.source.title)
+    private func resolveRelativePath(
+        _ requestedPath: String,
+        extraction: ExtractionResult,
+        assetId: String
+    ) -> String {
+        let trimmed = requestedPath.trimmingCharacters(in: .whitespacesAndNewlines)
+        if trimmed.isEmpty {
+            return defaultRelativePath(extraction: extraction, assetId: assetId)
+        }
 
-        var components = ["captures", category, sourceName]
+        guard let sanitized = sanitizeRelativePath(trimmed) else {
+            return defaultRelativePath(extraction: extraction, assetId: assetId)
+        }
 
-        // Generate unique filename
-        let filename = generateFilename(in: components.joined(separator: "/"))
-        components.append(filename)
-
-        return components.joined(separator: "/")
+        return ensureMarkdownExtension(sanitized)
     }
 
-    private func generateFilename(in relativeDirPath: String) -> String {
-        let dirPath = (config.vaultPath as NSString).appendingPathComponent(relativeDirPath)
+    private func defaultRelativePath(extraction: ExtractionResult, assetId: String) -> String {
+        let fallbackId = assetId.isEmpty ? UUID().uuidString : assetId
+        let safeId = sanitizeForFilesystem(fallbackId)
+        let category = sanitizeForFilesystem(extraction.category)
+
+        if extraction.category.lowercased() == "default" || category.isEmpty {
+            return "captures/notes/unknown/\(safeId).md"
+        }
+
+        return "captures/\(category)/\(safeId).md"
+    }
+
+    private func sanitizeRelativePath(_ path: String) -> String? {
+        let cleaned = path.replacingOccurrences(of: "\\", with: "/")
+        if cleaned.hasPrefix("/") || cleaned.hasPrefix("~") {
+            return nil
+        }
+
+        let parts = cleaned.split(separator: "/", omittingEmptySubsequences: true)
+        guard !parts.isEmpty else { return nil }
+        if parts.contains("..") { return nil }
+
+        let sanitized = parts.map { sanitizePathComponent(String($0)) }
+        return sanitized.joined(separator: "/")
+    }
+
+    private func sanitizePathComponent(_ component: String) -> String {
+        let cleaned = component
+            .replacingOccurrences(of: ":", with: "-")
+            .replacingOccurrences(of: "/", with: "-")
+            .replacingOccurrences(of: "\\", with: "-")
+            .replacingOccurrences(of: "?", with: "")
+            .replacingOccurrences(of: "\"", with: "")
+            .replacingOccurrences(of: "<", with: "")
+            .replacingOccurrences(of: ">", with: "")
+            .replacingOccurrences(of: "|", with: "")
+            .replacingOccurrences(of: "*", with: "")
+
+        return cleaned.isEmpty ? "untitled" : cleaned
+    }
+
+    private func ensureMarkdownExtension(_ path: String) -> String {
+        path.lowercased().hasSuffix(".md") ? path : "\(path).md"
+    }
+
+    private func nextAvailablePath(_ relativePath: String) -> String {
+        let ext = (relativePath as NSString).pathExtension
+        let base = (relativePath as NSString).deletingPathExtension
         let fm = FileManager.default
 
-        // Find the next available snapshot number
-        var number = 1
-        if fm.fileExists(atPath: dirPath) {
-            if let contents = try? fm.contentsOfDirectory(atPath: dirPath) {
-                let snapshotNumbers = contents.compactMap { filename -> Int? in
-                    guard filename.hasPrefix("snapshot-") && filename.hasSuffix(".md") else { return nil }
-                    let numStr = filename
-                        .replacingOccurrences(of: "snapshot-", with: "")
-                        .replacingOccurrences(of: ".md", with: "")
-                    return Int(numStr)
-                }
-                if let maxNumber = snapshotNumbers.max() {
-                    number = maxNumber + 1
-                }
+        var counter = 2
+        var candidate = "\(base)-\(counter).\(ext)"
+        while fm.fileExists(atPath: (config.vaultPath as NSString).appendingPathComponent(candidate)) {
+            counter += 1
+            candidate = "\(base)-\(counter).\(ext)"
+        }
+
+        return candidate
+    }
+
+    private func appendContent(existing: String, block: String, appendTo: String?) -> String {
+        var trimmedBlock = block.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmedBlock.isEmpty else { return existing }
+
+        if let appendTo = appendTo?.trimmingCharacters(in: .whitespacesAndNewlines),
+           !appendTo.isEmpty {
+            trimmedBlock = stripLeadingHeading(appendTo: appendTo, from: trimmedBlock)
+            let lines = existing.split(separator: "\n", omittingEmptySubsequences: false)
+            if let index = lines.firstIndex(where: { $0.trimmingCharacters(in: .whitespacesAndNewlines) == appendTo }) {
+                var updated = lines
+                let insertLines = trimmedBlock.split(separator: "\n", omittingEmptySubsequences: false)
+                updated.insert(contentsOf: insertLines, at: updated.index(after: index))
+                return updated.joined(separator: "\n")
+            }
+            return existing + "\n\n" + appendTo + "\n" + trimmedBlock + "\n"
+        }
+
+        return existing + "\n\n" + trimmedBlock + "\n"
+    }
+
+    private func upsertFrontmatter(
+        in content: String,
+        extraction: ExtractionResult,
+        capturedDate: Date,
+        assetId: String
+    ) -> String {
+        let lines = content.split(separator: "\n", omittingEmptySubsequences: false).map(String.init)
+        guard !lines.isEmpty else {
+            return markdownGenerator.generateDocument(from: extraction, capturedDate: capturedDate, assetId: assetId)
+        }
+
+        if lines.first?.trimmingCharacters(in: .whitespacesAndNewlines) == "---" {
+            if let endIndex = lines.dropFirst().firstIndex(where: { $0.trimmingCharacters(in: .whitespacesAndNewlines) == "---" }) {
+                let frontmatterLines = Array(lines[1..<endIndex])
+                let bodyLines = Array(lines[(endIndex + 1)...])
+                let updatedFrontmatter = updateFrontmatterLines(
+                    frontmatterLines,
+                    assetId: assetId
+                )
+                let merged = ["---"] + updatedFrontmatter + ["---"] + bodyLines
+                return merged.joined(separator: "\n")
             }
         }
 
-        return String(format: "snapshot-%03d.md", number)
+        let frontmatter = [
+            "---",
+            "title: \"\(escapeYAML(extraction.title))\"",
+            "category: \"\(escapeYAML(extraction.category))\"",
+            "captured: \(iso8601(capturedDate))",
+            "asset_ids: [\"\(escapeYAML(assetId))\"]",
+            "---",
+            ""
+        ].joined(separator: "\n")
+
+        return frontmatter + content
+    }
+
+    private func updateFrontmatterLines(_ lines: [String], assetId: String) -> [String] {
+        var assetIds = Set<String>()
+        var cleaned: [String] = []
+
+        for line in lines {
+            let trimmed = line.trimmingCharacters(in: .whitespaces)
+            if trimmed.hasPrefix("asset_ids:") {
+                let value = trimmed.dropFirst("asset_ids:".count)
+                    .trimmingCharacters(in: .whitespaces)
+                assetIds.formUnion(parseAssetIdList(value))
+                continue
+            }
+            if trimmed.hasPrefix("asset_id:") {
+                let value = trimmed.dropFirst("asset_id:".count)
+                    .trimmingCharacters(in: .whitespaces)
+                    .trimmingCharacters(in: CharacterSet(charactersIn: "\""))
+                if !value.isEmpty { assetIds.insert(value) }
+                continue
+            }
+            cleaned.append(line)
+        }
+
+        assetIds.insert(assetId)
+        let encoded = assetIds.sorted()
+            .map { "\"\(escapeYAML($0))\"" }
+            .joined(separator: ", ")
+        cleaned.append("asset_ids: [\(encoded)]")
+        return cleaned
+    }
+
+    private func parseAssetIdList(_ value: String) -> [String] {
+        let trimmed = value.trimmingCharacters(in: .whitespaces)
+        guard trimmed.hasPrefix("[") && trimmed.hasSuffix("]") else {
+            return [trimmed.trimmingCharacters(in: CharacterSet(charactersIn: "\""))]
+        }
+        let inner = trimmed.dropFirst().dropLast()
+        return inner
+            .split(separator: ",")
+            .map { $0.trimmingCharacters(in: .whitespaces).trimmingCharacters(in: CharacterSet(charactersIn: "\"")) }
+            .filter { !$0.isEmpty }
+    }
+
+    private func escapeYAML(_ string: String) -> String {
+        string
+            .replacingOccurrences(of: "\\", with: "\\\\")
+            .replacingOccurrences(of: "\"", with: "\\\"")
+    }
+
+    private func iso8601(_ date: Date) -> String {
+        let formatter = ISO8601DateFormatter()
+        formatter.formatOptions = [.withInternetDateTime]
+        return formatter.string(from: date)
+    }
+
+    private func stripLeadingHeading(appendTo: String, from block: String) -> String {
+        var lines = block.split(separator: "\n", omittingEmptySubsequences: false).map(String.init)
+        guard let firstIdx = lines.firstIndex(where: { !$0.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty }) else {
+            return block
+        }
+
+        if lines[firstIdx].trimmingCharacters(in: .whitespacesAndNewlines) == appendTo {
+            lines.remove(at: firstIdx)
+            if firstIdx < lines.count, lines[firstIdx].trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                lines.remove(at: firstIdx)
+            }
+        }
+
+        return lines.joined(separator: "\n")
+    }
+
+    private func writeFile(_ content: String, to fullPath: String) throws {
+        let fileURL = URL(fileURLWithPath: fullPath)
+        var coordinatorError: NSError?
+        var writeError: Error?
+
+        let coordinator = NSFileCoordinator()
+        coordinator.coordinate(
+            writingItemAt: fileURL,
+            options: .forReplacing,
+            error: &coordinatorError
+        ) { coordinatedURL in
+            do {
+                try content.write(to: coordinatedURL, atomically: true, encoding: .utf8)
+            } catch {
+                writeError = error
+            }
+        }
+
+        if let coordinatorError {
+            throw VaultWriterError.coordinationFailed(coordinatorError.localizedDescription)
+        }
+        if let writeError {
+            throw VaultWriterError.writeFailed(writeError.localizedDescription)
+        }
     }
 
     private func sanitizeForFilesystem(_ name: String) -> String {
@@ -176,12 +414,6 @@ public struct VaultWriter: Sendable {
         }
 
         return hyphenated.isEmpty ? "untitled" : hyphenated
-    }
-
-    private func dateDirectory(_ date: Date) -> String {
-        let formatter = DateFormatter()
-        formatter.dateFormat = "yyyy-MM-dd"
-        return formatter.string(from: date)
     }
 }
 

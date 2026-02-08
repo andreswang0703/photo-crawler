@@ -23,7 +23,9 @@ public actor ClaudeExtractor {
     /// Extract structured content from an image using Claude.
     public func extract(
         imageData: Data,
-        classificationResult: ClassificationResult
+        classificationResult: ClassificationResult,
+        assetId: String,
+        capturedDate: Date
     ) async throws -> ExtractionResult {
         // Wait for a slot if at max concurrency
         while activeTasks >= config.maxConcurrentAPICalls {
@@ -37,7 +39,20 @@ public actor ClaudeExtractor {
         let mediaType = detectMediaType(data: resizedData)
 
         let systemPrompt = buildSystemPrompt()
-        let userPrompt = buildUserPrompt(classification: classificationResult)
+        let userPrompt = buildUserPrompt(
+            classification: classificationResult,
+            assetId: assetId,
+            capturedDate: capturedDate
+        )
+
+        if shouldDebugPrompt() {
+            print("----- CLAUDE_SYSTEM_PROMPT_START -----")
+            print(systemPrompt)
+            print("----- CLAUDE_SYSTEM_PROMPT_END -----")
+            print("----- CLAUDE_USER_PROMPT_START -----")
+            print(userPrompt)
+            print("----- CLAUDE_USER_PROMPT_END -----")
+        }
 
         #if canImport(os)
         logger.info("Extracting content (category hint: \(classificationResult.categoryHint.rawValue))")
@@ -55,80 +70,117 @@ public actor ClaudeExtractor {
             throw AnthropicClientError.noTextContent
         }
 
+        if shouldDebugJSON() {
+            print("----- CLAUDE_JSON_START -----")
+            print(textContent)
+            print("----- CLAUDE_JSON_END -----")
+        }
+
         return try parseExtractionResponse(textContent)
     }
 
     // MARK: - Prompt Construction
 
     private func buildSystemPrompt() -> String {
-        """
+        let rulesBlock = buildCategoryRulesBlock()
+        let globalRulesBlock = buildGlobalRulesBlock()
+
+        return """
         You are a content extraction assistant. You analyze images of text-based learning \
-        content (book pages, articles, Duolingo exercises, code snippets, notes) and extract \
-        structured information.
+        content and return structured JSON that includes a concrete write plan.
+
+        GLOBAL RULES:
+        \(globalRulesBlock)
+
+        CATEGORY RULES:
+        \(rulesBlock)
+
+        The category rules are written in natural language by end users. They do NOT know \
+        the JSON schema. You must translate their intent into a concrete write plan. \
+        If a rule is vague, choose a reasonable default that matches the intent.
 
         You MUST respond with valid JSON only. No markdown, no explanation, just a JSON object \
         with these fields:
 
         {
-          "content_type": "book_page" | "article" | "duolingo" | "code_snippet" | "flashcard" | "notes" | "unknown",
-          "source_title": "string - for books/articles use the actual title. For everything else (notes, flashcards, slides, exercises), use a short 1-2 word topic category like 'Deep Learning', 'Japanese', 'Linear Algebra', 'Python'. This field is used as a folder name.",
-          "source_author": "string or null - author name if identifiable",
-          "source_app": "string or null - app name if from a specific app",
-          "chapter": "string or null - chapter name/number",
-          "section": "string or null - section name",
-          "page": "string or null - page number",
-          "extracted_text": "string - the full text content from the image, preserving paragraphs",
-          "summary": "string - 1-2 sentence summary of the content",
-          "language": "string - ISO 639-1 language code (e.g., en, es, fr)",
-          "tags": ["array", "of", "relevant", "topic", "tags"],
-          "highlights": [
-            {"text": "exact highlighted or underlined passage", "style": "highlight"},
-            {"text": "exact underlined passage", "style": "underline"}
-          ]
+          "category": "string - MUST match exactly one configured category name, or \"default\"",
+          "title": "string - best-effort title for the note",
+          "content": "string - final markdown content (NO YAML frontmatter)",
+          "write": {
+            "mode": "create" | "append" | "upsert" | "skip",
+            "path": "relative/path/to/note.md",
+            "append_to": "optional heading or marker line (string)"
+          }
         }
 
         CRITICAL RULES:
         - ONLY extract text that you can actually read in the image. NEVER invent, guess, or hallucinate text.
         - If a word is unclear, use [illegible] instead of guessing.
-        - If you cannot read most of the text, set extracted_text to what you CAN read and note the limitation in the summary.
+        - If you cannot read most of the text, make content include only what you can read.
         - Extract ALL legible text visible in the image, preserving paragraph structure.
-        - Use \\n for line breaks within extracted_text.
-        - If you can't determine a field, use null.
-        - NEVER use "Unknown" as source_title. If there is no explicit book or article title visible, use the broad topic as the title — for example "Deep Learning" for a neural network diagram, "Japanese" for a Japanese phrasebook, "Linear Algebra" for math notes. The title is used as a folder name, so keep it short and categorical.
-        - Tags should be 3-7 lowercase topic keywords relevant for note organization.
-        - For Duolingo: include the language being learned and the exercise type.
-        - For book pages: try to identify chapter, page number, book title from headers/footers.
-        - For code: identify the programming language as a tag.
-        - The image may be a photo taken at an angle. Read the text as it appears, do not fabricate content.
-        - HIGHLIGHTS: Look carefully for any text that is highlighted (marker/highlighter pen), underlined, circled, or bracketed by the reader. Include each such passage in the "highlights" array with the exact text and style ("highlight", "underline", "circled", "bracket"). If no annotations are visible, return an empty array.
-        - The highlights array is for reader annotations only — not for printed bold/italic text.
-        - DIAGRAMS: If the image contains a diagram, flowchart, architecture diagram, neural network diagram, or any visual structure, DO NOT just list raw symbols and arrows. Instead, reproduce the diagram as a clear ASCII/markdown representation in extracted_text that captures the visual structure. Use markdown tables, indentation, or ASCII art to show relationships, layers, and flow. Describe what the diagram shows — its components, how they connect, and the overall structure. The goal is that someone reading the markdown should understand the diagram without seeing the original image.
+        - Use \\n for line breaks within content.
+        - Do NOT include YAML frontmatter in content.
+        - The path MUST be relative to the vault root, with no leading "/" and no ".." segments.
+        - If unsure, use the default rules and set category to "default".
+        - Use the provided asset_id and captured_date if the write rule implies it.
+        - If the write rule mentions language, infer it and pick a lowercase English slug \
+          (e.g., japanese, spanish).
+        - If the write rule mentions monthly or daily notes, derive YYYYMM or YYYY-MM-DD \
+          from captured_date and place entries under an appropriate date header when appending.
+        - If a global rule says to skip (e.g., "only extract book notes"), set write.mode to \
+          "skip" and return empty content.
         """
     }
 
-    private func buildUserPrompt(classification: ClassificationResult) -> String {
-        let categoryContext: String
-        switch classification.categoryHint {
-        case .bookPage:
-            categoryContext = "This appears to be a book page or textbook. Look for chapter headings, page numbers, and paragraph text."
-        case .article:
-            categoryContext = "This appears to be an article or web content. Look for headlines, bylines, and publication info."
-        case .duolingo:
-            categoryContext = "This appears to be a Duolingo language learning exercise. Identify the language being learned and the exercise type."
-        case .codeSnippet:
-            categoryContext = "This appears to be code or a programming example. Identify the language and purpose."
-        case .flashcard:
-            categoryContext = "This appears to be a flashcard or study material."
-        case .notes:
-            categoryContext = "This appears to be notes or personal study content."
-        case .unknown:
-            categoryContext = "Analyze this image and determine what type of learning content it contains."
+    private func buildCategoryRulesBlock() -> String {
+        if config.categories.isEmpty {
+            return """
+            (No categories configured.)
+
+            Default rules:
+            - Extraction rules: \(config.defaultRules.extractionRules)
+            - Write rule: \(config.defaultRules.writeRule)
+            """
         }
 
+        var lines: [String] = []
+        lines.append("Available categories:")
+        for rule in config.categories {
+            lines.append("- Name: \(rule.name)")
+            if let hint = rule.hint, !hint.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                lines.append("  Hint: \(hint)")
+            }
+            lines.append("  Extraction rules: \(rule.extractionRules)")
+            lines.append("  Write rule: \(rule.writeRule)")
+        }
+        lines.append("")
+        lines.append("Default rules:")
+        lines.append("- Extraction rules: \(config.defaultRules.extractionRules)")
+        lines.append("- Write rule: \(config.defaultRules.writeRule)")
+
+        return lines.joined(separator: "\n")
+    }
+
+    private func buildGlobalRulesBlock() -> String {
+        if config.globalRules.isEmpty {
+            return "(none)"
+        }
+        return config.globalRules
+            .map { "- \($0)" }
+            .joined(separator: "\n")
+    }
+
+    private func buildUserPrompt(
+        classification: ClassificationResult,
+        assetId: String,
+        capturedDate: Date
+    ) -> String {
         return """
         Extract the text content from this image and return structured JSON.
 
-        Context: \(categoryContext)
+        Asset context:
+        - asset_id: \(assetId)
+        - captured_date: \(iso8601(capturedDate))
 
         Respond with JSON only.
         """
@@ -160,26 +212,49 @@ public actor ClaudeExtractor {
             throw ExtractionError.invalidJSON("Failed to decode: \(error.localizedDescription)")
         }
 
-        let contentType = ContentCategory(rawValue: decoded.contentType) ?? .unknown
+        let category = normalizeCategory(decoded.category)
+        let title = decoded.title?.trimmingCharacters(in: .whitespacesAndNewlines)
+        let content = decoded.content?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        let write = decoded.write ?? WritePlan(mode: .create, path: "")
+
+        if content.isEmpty && write.mode != .skip {
+            throw ExtractionError.noContent
+        }
 
         return ExtractionResult(
-            contentType: contentType,
-            source: SourceInfo(
-                title: decoded.sourceTitle,
-                author: decoded.sourceAuthor,
-                app: decoded.sourceApp
-            ),
-            location: LocationInfo(
-                chapter: decoded.chapter,
-                section: decoded.section,
-                page: decoded.page
-            ),
-            extractedText: decoded.extractedText,
-            summary: decoded.summary,
-            language: decoded.language,
-            tags: decoded.tags,
-            highlights: decoded.highlights
+            category: category,
+            title: (title?.isEmpty ?? true) ? "Untitled" : title!,
+            content: content,
+            writePlan: write
         )
+    }
+
+    private func normalizeCategory(_ raw: String?) -> String {
+        let trimmed = (raw ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
+        if trimmed.isEmpty { return "default" }
+        if trimmed.lowercased() == "default" { return "default" }
+
+        if let match = config.categories.first(where: { $0.name.compare(trimmed, options: .caseInsensitive) == .orderedSame }) {
+            return match.name
+        }
+
+        return "default"
+    }
+
+    private func iso8601(_ date: Date) -> String {
+        let formatter = ISO8601DateFormatter()
+        formatter.formatOptions = [.withInternetDateTime]
+        return formatter.string(from: date)
+    }
+
+    private func shouldDebugJSON() -> Bool {
+        let value = ProcessInfo.processInfo.environment["PHOTO_CRAWLER_DEBUG_JSON"] ?? ""
+        return value == "1" || value.lowercased() == "true"
+    }
+
+    private func shouldDebugPrompt() -> Bool {
+        let value = ProcessInfo.processInfo.environment["PHOTO_CRAWLER_DEBUG_PROMPT"] ?? ""
+        return value == "1" || value.lowercased() == "true"
     }
 
     // MARK: - Image Processing

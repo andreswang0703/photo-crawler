@@ -15,10 +15,12 @@ iPhone photo → add to "crawler" album → iCloud Photos sync → macOS
                                               (~$0.005/image)
                                                                 ↓
                                               Markdown → Obsidian vault
-                                              captures/book_page/genesis/snapshot-001.md
+                                              captures/... (path is prompt-driven)
 ```
 
-You control what gets processed by adding photos to a specific album. No heuristic filtering — if it's in the album, it gets extracted.
+If `album` is empty, photo-crawler scans your entire Photos library instead.
+
+You control what gets processed by adding photos to a specific album. No heuristic filtering — if it's in the album, it gets extracted. (Set `album` to empty to scan the entire library.)
 
 ## Requirements
 
@@ -49,17 +51,27 @@ Set your vault path and API key:
 {
   "album": "crawler",
   "api_key": "sk-ant-api03-...",
-  "vault_path": "/Users/you/Library/Mobile Documents/com~apple~CloudDocs/obsidian/your-vault"
+  "vault_path": "/Users/you/Library/Mobile Documents/com~apple~CloudDocs/obsidian/your-vault",
+  "global_rules": [
+    "Only extract book notes.",
+    "Skip photos that are personal or not text-based learning content."
+  ],
+  "categories": [],
+  "default": {
+    "extraction_rules": "Extract readable text. Add a short summary.",
+    "write_rule": "Create a new note under captures/notes/unknown/ using asset_id as filename."
+  }
 }
 ```
 
 To find your Obsidian vault path: `ls ~/Library/Mobile\ Documents/com~apple~CloudDocs/obsidian/`
 
-### 3. Create album
+### 3. Create album (optional)
 
 Open **Photos** on your Mac or iPhone and create an album called **"crawler"**.
 
 This is the album photo-crawler watches. Add photos you want extracted to this album.
+If you leave `album` empty, photo-crawler will scan your **entire Photos library** instead (higher cost).
 
 ### 4. Grant Photos access
 
@@ -71,7 +83,7 @@ Go to **System Settings → Privacy & Security → Photos** → toggle on **Term
 photo-crawler watch
 ```
 
-Add a photo to your "crawler" album — it shows up in your vault within 30 seconds.
+Add a photo to your "crawler" album — it shows up in your vault within 30 seconds. If you leave `album` empty, any new photo in your library can be processed.
 
 ### Build from source (optional)
 
@@ -135,11 +147,68 @@ photo-crawler config
 |-------|---------|-------------|
 | `vault_path` | `""` | **(required)** Path to Obsidian vault root |
 | `api_key` | `""` | **(required)** Anthropic API key (or set `ANTHROPIC_API_KEY` env var) |
-| `album` | `"PhotoCrawler"` | Name of the Photos album to watch |
+| `album` | `"PhotoCrawler"` | Name of the Photos album to watch. Set to `""` to scan the entire Photos library |
 | `scan_interval_seconds` | `30` | How often `watch` mode polls |
 | `model` | `claude-sonnet-4-20250514` | Claude model for extraction |
 | `max_concurrent_api_calls` | `3` | Max parallel Claude API requests |
 | `initial_scan_days` | `30` | How far back to scan on first run |
+| `categories` | `[]` | Prompt-driven extraction categories (see below) |
+| `default` | `{...}` | Fallback rules when no category matches |
+| `global_rules` | `[]` | Natural-language rules applied to all categories |
+
+## Prompt-Driven Categories (Natural Language)
+
+You can define categories with natural-language rules. The app turns these rules into a concrete write plan automatically.
+
+Example category (Duolingo):
+
+```json
+{
+  "name": "duolingo",
+  "hint": "screenshots of Duolingo lessons and exercises",
+  "extraction_rules": "Only extract the single sentence being tested. Ignore word bank options and UI. Output content as a short bullet list with the sentence and its English translation.",
+  "write_rule": "Append to a monthly note per language under captures/languages/<language>/YYYYMM.md. Add a date header (YYYY-MM-DD) and append the sentence under that header. If language is unclear, use unknown."
+}
+```
+
+Example category (Recipe):
+
+```json
+{
+  "name": "recipe",
+  "hint": "photos or screenshots of recipes",
+  "extraction_rules": "Extract ingredients and steps. Format with headings: Ingredients, Steps.",
+  "write_rule": "Create a new note under captures/recipes/<title>.md."
+}
+```
+
+Full config example:
+
+```json
+{
+  "vault_path": "/Users/you/Library/Mobile Documents/com~apple~CloudDocs/obsidian/your-vault",
+  "api_key": "sk-ant-api03-...",
+  "album": "crawler",
+  "scan_interval_seconds": 30,
+  "model": "claude-sonnet-4-20250514",
+  "global_rules": [
+    "Only extract book notes.",
+    "Skip anything that is not text-based learning content."
+  ],
+  "categories": [
+    {
+      "name": "duolingo",
+      "hint": "screenshots of Duolingo lessons and exercises",
+      "extraction_rules": "Only extract the single sentence being tested. Ignore word bank options and UI. Output content as a short bullet list with the sentence and its English translation.",
+      "write_rule": "Append to a monthly note per language under captures/languages/<language>/YYYYMM.md. Add a date header (YYYY-MM-DD) and append the sentence under that header. If language is unclear, use unknown."
+    }
+  ],
+  "default": {
+    "extraction_rules": "Extract readable text. Add a short summary.",
+    "write_rule": "Create a new note under captures/notes/unknown/ using asset_id as filename."
+  }
+}
+```
 
 ## Output Structure
 
@@ -147,23 +216,25 @@ Files are organized under `{vault}/captures/`:
 
 ```
 captures/
-  book_page/
-    genesis/
-      snapshot-001.md
-  article/
-    how-to-scale-your-model/
-      snapshot-001.md
-  flashcard/
-    日语口语900句/
-      snapshot-001.md
   notes/
     unknown/
-      snapshot-001.md
+      <asset_id>.md
+  languages/
+    spanish/
+      202602.md
 ```
 
 ## Re-scanning
 
-Each note contains an `asset_id` in its frontmatter. photo-crawler checks the vault for existing notes before processing. **Delete a note from Obsidian and the photo will be re-extracted on the next poll** — useful if you want a better extraction or the first one was wrong.
+Each note contains `asset_ids` in frontmatter. photo-crawler checks the vault for existing asset IDs before processing. **Delete a note from Obsidian and the photo will be re-extracted on the next poll** — useful if you want a better extraction or the first one was wrong.
+
+## Debug Mode
+
+Print Claude prompts and raw JSON output:
+
+```bash
+PHOTO_CRAWLER_DEBUG_PROMPT=1 PHOTO_CRAWLER_DEBUG_JSON=1 photo-crawler watch
+```
 
 ## Running as a Background Service
 
@@ -214,7 +285,7 @@ Stop: `launchctl unload ~/Library/LaunchAgents/com.photocrawler.plist`
 ## Troubleshooting
 
 **"Album 'crawler' not found in Photos"**
-→ Create an album called "crawler" in the Photos app (Mac or iPhone). The name must match the `album` field in your config.
+→ Create an album called "crawler" in the Photos app (Mac or iPhone). The name must match the `album` field in your config. If `album` is empty, the entire library is scanned.
 
 **"Photo library access denied"**
 → System Settings → Privacy & Security → Photos → enable your terminal app.

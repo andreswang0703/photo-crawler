@@ -24,7 +24,13 @@ enum ConfigFile {
             minLineCount: 5,
             maxConcurrentAPICalls: 3,
             screenshotsOnly: false,
-            initialScanDays: 30
+            initialScanDays: 30,
+            categories: [],
+            defaultRules: ExtractionDefaultRule(
+                extractionRules: "Extract readable text. Add a short summary.",
+                writeRule: "Create a new note under captures/notes/unknown/ using asset_id as filename."
+            ),
+            globalRules: []
         )
     }
 
@@ -59,6 +65,9 @@ struct FileConfig: Codable {
     var maxConcurrentAPICalls: Int
     var screenshotsOnly: Bool
     var initialScanDays: Int
+    var categories: [ExtractionCategoryRule]
+    var defaultRules: ExtractionDefaultRule
+    var globalRules: [String]
 
     enum CodingKeys: String, CodingKey {
         case vaultPath = "vault_path"
@@ -71,6 +80,9 @@ struct FileConfig: Codable {
         case maxConcurrentAPICalls = "max_concurrent_api_calls"
         case screenshotsOnly = "screenshots_only"
         case initialScanDays = "initial_scan_days"
+        case categories
+        case defaultRules = "default"
+        case globalRules = "global_rules"
     }
 
     init(from decoder: Decoder) throws {
@@ -85,6 +97,13 @@ struct FileConfig: Codable {
         maxConcurrentAPICalls = try container.decode(Int.self, forKey: .maxConcurrentAPICalls)
         screenshotsOnly = try container.decode(Bool.self, forKey: .screenshotsOnly)
         initialScanDays = try container.decode(Int.self, forKey: .initialScanDays)
+        categories = (try? container.decode([ExtractionCategoryRule].self, forKey: .categories)) ?? []
+        defaultRules = (try? container.decode(ExtractionDefaultRule.self, forKey: .defaultRules))
+            ?? ExtractionDefaultRule(
+                extractionRules: "Extract readable text. Add a short summary.",
+                writeRule: "Create a new note under captures/notes/unknown/ using asset_id as filename."
+            )
+        globalRules = (try? container.decode([String].self, forKey: .globalRules)) ?? []
     }
 
     init(
@@ -97,7 +116,10 @@ struct FileConfig: Codable {
         minLineCount: Int,
         maxConcurrentAPICalls: Int,
         screenshotsOnly: Bool,
-        initialScanDays: Int
+        initialScanDays: Int,
+        categories: [ExtractionCategoryRule],
+        defaultRules: ExtractionDefaultRule,
+        globalRules: [String]
     ) {
         self.vaultPath = vaultPath
         self.apiKey = apiKey
@@ -109,6 +131,9 @@ struct FileConfig: Codable {
         self.maxConcurrentAPICalls = maxConcurrentAPICalls
         self.screenshotsOnly = screenshotsOnly
         self.initialScanDays = initialScanDays
+        self.categories = categories
+        self.defaultRules = defaultRules
+        self.globalRules = globalRules
     }
 
     func toCrawlerConfiguration() -> CrawlerConfiguration {
@@ -122,7 +147,10 @@ struct FileConfig: Codable {
             maxConcurrentAPICalls: maxConcurrentAPICalls,
             screenshotsOnly: screenshotsOnly,
             initialScanDays: initialScanDays,
-            albumName: album
+            albumName: album,
+            categories: categories,
+            defaultRules: defaultRules,
+            globalRules: globalRules
         )
     }
 }

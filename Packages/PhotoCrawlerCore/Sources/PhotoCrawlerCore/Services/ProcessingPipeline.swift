@@ -10,7 +10,6 @@ public actor ProcessingPipeline {
     private let scanner: PhotoScanner
     private let classifier: LocalClassifier
     private let extractor: ClaudeExtractor
-    private let markdownGenerator: MarkdownGenerator
     private let vaultWriter: VaultWriter
     private let stateStore: StateStore
 
@@ -33,7 +32,6 @@ public actor ProcessingPipeline {
         self.scanner = PhotoScanner(config: config, stateStore: stateStore)
         self.classifier = LocalClassifier(config: config)
         self.extractor = ClaudeExtractor(config: config)
-        self.markdownGenerator = MarkdownGenerator()
         self.vaultWriter = VaultWriter(config: config)
     }
 
@@ -77,26 +75,38 @@ public actor ProcessingPipeline {
                     await stateStore.incrementClassified()
 
                     // Pass 2: Claude extraction
+                    let capturedDate = asset.creationDate ?? Date()
                     let extraction = try await extractor.extract(
                         imageData: imageData,
-                        classificationResult: classification
+                        classificationResult: classification,
+                        assetId: asset.localIdentifier,
+                        capturedDate: capturedDate
                     )
                     await stateStore.incrementExtracted()
                     extractedCount += 1
 
-                    // Pass 3: Generate markdown with asset ID
-                    let capturedDate = asset.creationDate ?? Date()
-                    let markdown = markdownGenerator.generate(
-                        from: extraction,
+                    if extraction.writePlan.mode == .skip {
+                        await stateStore.incrementSkipped()
+                        await stateStore.markProcessed(asset.localIdentifier)
+                        processedCount += 1
+
+                        #if canImport(os)
+                        logger.info("Skipped: \(asset.localIdentifier)")
+                        #endif
+
+                        await _delegate?.pipelineDidProcess(
+                            assetIdentifier: asset.localIdentifier,
+                            result: extraction,
+                            markdownPath: "(skipped)"
+                        )
+                        continue
+                    }
+
+                    // Pass 3: Write to vault
+                    let relativePath = try vaultWriter.write(
+                        extraction: extraction,
                         capturedDate: capturedDate,
                         assetId: asset.localIdentifier
-                    )
-
-                    // Pass 4: Write to vault
-                    let relativePath = try vaultWriter.write(
-                        markdown: markdown,
-                        extraction: extraction,
-                        capturedDate: capturedDate
                     )
                     await stateStore.incrementWritten()
                     processedCount += 1

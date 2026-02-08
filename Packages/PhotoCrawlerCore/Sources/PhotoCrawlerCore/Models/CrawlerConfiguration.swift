@@ -35,6 +35,15 @@ public struct CrawlerConfiguration: Codable, Sendable {
     /// Name of the Photos album to scan. Only photos in this album are processed.
     public var albumName: String
 
+    /// User-defined categories for extraction.
+    public var categories: [ExtractionCategoryRule]
+
+    /// Default/fallback extraction rules.
+    public var defaultRules: ExtractionDefaultRule
+
+    /// Global rules applied to all categories.
+    public var globalRules: [String]
+
     public init(
         vaultPath: String = "",
         apiKey: String = "",
@@ -46,7 +55,13 @@ public struct CrawlerConfiguration: Codable, Sendable {
         maxImageDimension: Int = 1568,
         screenshotsOnly: Bool = false,
         initialScanDays: Int = 30,
-        albumName: String = "PhotoCrawler"
+        albumName: String = "PhotoCrawler",
+        categories: [ExtractionCategoryRule] = [],
+        defaultRules: ExtractionDefaultRule = ExtractionDefaultRule(
+            extractionRules: "Extract readable text. Add a short summary.",
+            writeRule: "Create a new note under captures/notes/unknown/ using asset_id as filename."
+        ),
+        globalRules: [String] = []
     ) {
         self.vaultPath = vaultPath
         self.apiKey = apiKey
@@ -59,6 +74,9 @@ public struct CrawlerConfiguration: Codable, Sendable {
         self.screenshotsOnly = screenshotsOnly
         self.initialScanDays = initialScanDays
         self.albumName = albumName
+        self.categories = categories
+        self.defaultRules = defaultRules
+        self.globalRules = globalRules
     }
 
     /// The captures directory inside the vault.

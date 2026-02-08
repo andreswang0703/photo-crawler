@@ -31,18 +31,35 @@ public actor PhotoScanner {
             throw PhotoScannerError.notAuthorized(status)
         }
 
-        // Find the album
-        guard let album = findAlbum(named: config.albumName) else {
-            throw PhotoScannerError.albumNotFound(config.albumName)
+        let trimmedAlbum = config.albumName.trimmingCharacters(in: .whitespacesAndNewlines)
+        let assets: [PHAsset]
+
+        if trimmedAlbum.isEmpty {
+            assets = fetchAllAssetsFromLibrary()
+        } else {
+            // Find the album
+            guard let album = findAlbum(named: config.albumName) else {
+                throw PhotoScannerError.albumNotFound(config.albumName)
+            }
+            assets = fetchAllAssets(in: album)
         }
 
-        let assets = fetchAllAssets(in: album)
-
         // Only load image data for photos that don't already have a vault note
-        let newAssets = assets.filter { !existingAssetIds.contains($0.localIdentifier) }
+        var newAssets: [PHAsset] = []
+        for asset in assets {
+            let identifier = asset.localIdentifier
+            if existingAssetIds.contains(identifier) {
+                continue
+            }
+            if await stateStore.isProcessed(identifier) {
+                continue
+            }
+            newAssets.append(asset)
+        }
 
         #if canImport(os)
-        logger.info("Album '\(self.config.albumName)': \(assets.count) total, \(newAssets.count) new")
+        let scopeName = trimmedAlbum.isEmpty ? "Photos Library" : "Album '\(self.config.albumName)'"
+        logger.info("\(scopeName): \(assets.count) total, \(newAssets.count) new")
         #endif
 
         var results: [(asset: PHAsset, data: Data)] = []
@@ -79,6 +96,20 @@ public actor PhotoScanner {
         fetchOptions.sortDescriptors = [NSSortDescriptor(key: "creationDate", ascending: false)]
 
         let fetchResult = PHAsset.fetchAssets(in: album, options: fetchOptions)
+        var assets: [PHAsset] = []
+        fetchResult.enumerateObjects { asset, _, _ in
+            assets.append(asset)
+        }
+
+        return assets
+    }
+
+    private func fetchAllAssetsFromLibrary() -> [PHAsset] {
+        let fetchOptions = PHFetchOptions()
+        fetchOptions.predicate = NSPredicate(format: "mediaType == %d", PHAssetMediaType.image.rawValue)
+        fetchOptions.sortDescriptors = [NSSortDescriptor(key: "creationDate", ascending: false)]
+
+        let fetchResult = PHAsset.fetchAssets(with: fetchOptions)
         var assets: [PHAsset] = []
         fetchResult.enumerateObjects { asset, _, _ in
             assets.append(asset)

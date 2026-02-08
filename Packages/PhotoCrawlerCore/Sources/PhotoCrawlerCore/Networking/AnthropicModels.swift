@@ -145,73 +145,35 @@ public struct AnthropicErrorDetail: Decodable, Sendable {
 
 /// The structured JSON response expected from Claude for content extraction.
 public struct ClaudeExtractionResponse: Sendable {
-    public let contentType: String
-    public let sourceTitle: String
-    public let sourceAuthor: String?
-    public let sourceApp: String?
-    public let chapter: String?
-    public let section: String?
-    public let page: String?
-    public let extractedText: String
-    public let summary: String
-    public let language: String
-    public let tags: [String]
-    public let highlights: [Highlight]
+    public let category: String?
+    public let title: String?
+    public let content: String?
+    public let write: WritePlan?
 
     enum CodingKeys: String, CodingKey {
-        case contentType = "content_type"
-        case sourceTitle = "source_title"
-        case sourceAuthor = "source_author"
-        case sourceApp = "source_app"
-        case chapter, section, page
-        case extractedText = "extracted_text"
-        case summary, language, tags, highlights
-    }
-}
-
-/// A highlighted or underlined passage detected in the image.
-public struct Highlight: Codable, Sendable {
-    public let text: String
-    public let style: String // "highlight", "underline", "circled", "bracket"
-
-    public init(text: String, style: String) {
-        self.text = text
-        self.style = style
+        case category
+        case title
+        case content
+        case write
     }
 }
 
 extension ClaudeExtractionResponse: Decodable {
     public init(from decoder: Decoder) throws {
         let container = try decoder.container(keyedBy: CodingKeys.self)
-        contentType = (try? container.decode(String.self, forKey: .contentType)) ?? "unknown"
-        sourceTitle = (try? container.decode(String.self, forKey: .sourceTitle)) ?? "Unknown"
-        sourceAuthor = try? container.decode(String.self, forKey: .sourceAuthor)
-        sourceApp = try? container.decode(String.self, forKey: .sourceApp)
-        chapter = try? container.decode(String.self, forKey: .chapter)
-        section = try? container.decode(String.self, forKey: .section)
-        page = try? container.decode(String.self, forKey: .page)
-        extractedText = (try? container.decode(String.self, forKey: .extractedText)) ?? ""
-        summary = (try? container.decode(String.self, forKey: .summary)) ?? ""
-        language = (try? container.decode(String.self, forKey: .language)) ?? "en"
-        tags = (try? container.decode([String].self, forKey: .tags)) ?? []
-        highlights = (try? container.decode([Highlight].self, forKey: .highlights)) ?? []
+        category = try? container.decode(String.self, forKey: .category)
+        title = try? container.decode(String.self, forKey: .title)
+        content = try? container.decode(String.self, forKey: .content)
+        write = try? container.decode(WritePlan.self, forKey: .write)
     }
 }
 
 extension ClaudeExtractionResponse: Encodable {
     public func encode(to encoder: Encoder) throws {
         var container = encoder.container(keyedBy: CodingKeys.self)
-        try container.encode(contentType, forKey: .contentType)
-        try container.encode(sourceTitle, forKey: .sourceTitle)
-        try container.encodeIfPresent(sourceAuthor, forKey: .sourceAuthor)
-        try container.encodeIfPresent(sourceApp, forKey: .sourceApp)
-        try container.encodeIfPresent(chapter, forKey: .chapter)
-        try container.encodeIfPresent(section, forKey: .section)
-        try container.encodeIfPresent(page, forKey: .page)
-        try container.encode(extractedText, forKey: .extractedText)
-        try container.encode(summary, forKey: .summary)
-        try container.encode(language, forKey: .language)
-        try container.encode(tags, forKey: .tags)
-        try container.encode(highlights, forKey: .highlights)
+        try container.encodeIfPresent(category, forKey: .category)
+        try container.encodeIfPresent(title, forKey: .title)
+        try container.encodeIfPresent(content, forKey: .content)
+        try container.encodeIfPresent(write, forKey: .write)
     }
 }
