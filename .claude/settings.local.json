@@ -1,0 +1,12 @@
+{
+  "permissions": {
+    "allow": [
+      "WebSearch",
+      "WebFetch(domain:docs.anthropic.com)",
+      "Bash(swift test:*)",
+      "Bash(xcodebuild test:*)",
+      "Bash(swift run:*)",
+      "Bash(swift:*)"
+    ]
+  }
+}
